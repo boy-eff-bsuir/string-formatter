@@ -210,15 +210,7 @@ namespace StringFormatter.Core
                 }
 
                 
-                string result;
-                if (unit.IsArray)
-                {
-                    result = (string)del.DynamicInvoke(target);
-                }
-                else
-                {
-                    result = (string)del.DynamicInvoke(target);
-                }
+                string result = (string)del.DynamicInvoke(target);
                 
                 sb.Remove(dto.OpenCurlyBracketPosition, 
                     dto.CloseCurlyBracketPosition - dto.OpenCurlyBracketPosition + 1);
@@ -248,7 +240,6 @@ namespace StringFormatter.Core
             var arrayElementInfo = memberInfo.GetUnderlyingType().GetElementType();
             var memberAccess = Expression.MakeMemberAccess(targetTypeParameter, memberInfo);
             var arrayAccess = Expression.ArrayIndex(memberAccess, Expression.Constant(index));
-            //var arrayAccess = Expression.ArrayAccess(memberAccess, indexParameter);
             var method = arrayElementInfo.GetMethod("ToString", new Type[0]);
             var methodCall = Expression.Call(arrayAccess, method);
             var delegateType = Expression.GetDelegateType(targetType, typeof(string));

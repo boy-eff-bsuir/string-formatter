@@ -16,6 +16,18 @@ public class StringFormatterTests
         _sut = new Formatter(cacheService, validationService);
     }
 
+    [Theory]
+    [InlineData("{")]
+    [InlineData("}")]
+    [InlineData("{{}")]
+    [InlineData("{}}")]
+    [InlineData("{[}")]
+    [InlineData("{]}")]
+    public void Format_ShouldThrowWrongStringException(string input)
+    {
+        Assert.Throws<WrongStringException>(() => _sut.Format(input, new object()));
+    }
+
     [Fact]
     public void Format_ShouldSucceed()
     {
