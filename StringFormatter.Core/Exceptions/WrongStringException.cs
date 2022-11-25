@@ -12,11 +12,11 @@ namespace StringFormatter.Core.Exceptions
         {
         }
 
-        public WrongStringException(string? message) : base(message)
+        public WrongStringException(string message) : base(message)
         {
         }
 
-        public WrongStringException(string? message, Exception? innerException) : base(message, innerException)
+        public WrongStringException(string message, Exception innerException) : base(message, innerException)
         {
         }
 

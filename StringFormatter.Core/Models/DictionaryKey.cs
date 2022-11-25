@@ -8,6 +8,7 @@ namespace StringFormatter.Core.Models
     public struct DictionaryKey
     {
         public Type Type { get; set; }
-        public string MethodName { get; set; }
+        public string MemberName { get; set; }
+        public int Index { get; set; }
     }
 }

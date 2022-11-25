@@ -5,7 +5,9 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Text;
 using System.Threading.Tasks;
+using StringFormatter.Core.Dtos;
 using StringFormatter.Core.Exceptions;
+using StringFormatter.Core.Extensions;
 using StringFormatter.Core.Interfaces;
 using StringFormatter.Core.Models;
 
@@ -15,58 +17,86 @@ namespace StringFormatter.Core
     {
         private const char OpenCurlyBracket = '{';
         private const char CloseCurlyBracket = '}';
-        private static ConcurrentDictionary<DictionaryKey, Delegate> _cache = new();
+        private const char OpenSquareBracket = '[';
+        private const char CloseSquareBracket = ']';
+        private readonly ICacheService _cacheService;
+        private readonly IValidationService _validationService;
+
+        public Formatter(ICacheService cacheService, IValidationService validationService)
+        {
+            _cacheService = cacheService;
+            _validationService = validationService;
+        }
 
         public string Format(string template, object target)
         {
-            Stack<InterpolationUnit> units = new();
+            Stack<InterpolationUnitDto> units = new();
             Stack<EscapeCharacter> escapeChars = new();
             ProcessInputString(template, units, escapeChars);
             Validate(units, escapeChars);
             
-            var result = ReplaceInterpolationUnits(template, target, units, escapeChars);
-            return result;
+            var result = GenerateInterpolatedString(template, target, units);
+            return result.ToString();
         }
 
         private void ProcessInputString(string template,
-            Stack<InterpolationUnit> units, 
+            Stack<InterpolationUnitDto> units, 
             Stack<EscapeCharacter> escapeChars)
         {
             for (int i = 0; i < template.Length; i++)
             {
-                if (template[i] == OpenCurlyBracket)
+                switch (template[i])
                 {
-                    ProcessOpenCurlyBracket(i, units, escapeChars);
-                }
-                else if (template[i] == CloseCurlyBracket)
-                {
-                    ProcessCloseCurlyBracket(i, units, escapeChars);
+                    case OpenCurlyBracket:
+                    {
+                        ProcessOpenCurlyBracket(i, units, escapeChars);
+                        break;
+                    }
+
+                    case CloseCurlyBracket:
+                    {
+                        ProcessCloseCurlyBracket(i, units, escapeChars);
+                        break;
+                    }
+
+                    case OpenSquareBracket:
+                    {
+                        ProcessOpenSquareBracket(i, units);
+                        break;
+                    }
+
+                    case CloseSquareBracket:
+                    {
+                        ProcessCloseSquareBracket(i, units);
+                        break;
+                    }
+
                 }
             }
         }
 
         private void ProcessOpenCurlyBracket(int pos,
-            Stack<InterpolationUnit> units, 
+            Stack<InterpolationUnitDto> units, 
             Stack<EscapeCharacter> escapeChars)
         {
-            if (units.Any() && units.Peek().OpenPosition == pos - 1)
+            if (units.Any() && units.Peek().OpenCurlyBracketPosition == pos - 1)
             {
                 escapeChars.Push(new(OpenCurlyBracket, pos - 1, true));
                 units.Pop();
             }
             else
             {
-                units.Push(new InterpolationUnit() { OpenPosition = pos });
+                units.Push(new InterpolationUnitDto(pos));
             }
         }
 
         private void ProcessCloseCurlyBracket(int pos,
-            Stack<InterpolationUnit> units, 
+            Stack<InterpolationUnitDto> units, 
             Stack<EscapeCharacter> escapeChars)
         {
             if (units.Any() && !units.Peek().IsClosed)
             {
-                var unit = units.Peek().ClosePosition = pos;
+                units.Peek().CloseCurlyBracketPosition = pos;
                 return;
             }
 
@@ -81,65 +111,148 @@ namespace StringFormatter.Core
             escapeChars.Push(new EscapeCharacter(CloseCurlyBracket, pos, false));
         }
 
+        private void ProcessOpenSquareBracket(int pos, Stack<InterpolationUnitDto> units)
+        {
+            var unit = units.Peek();
+            if (unit.IsClosed)
+            {
+                return;
+            }
+
+            if (unit.OpenSquareBracketPosition != -1)
+            {
+                throw new WrongStringException($"Double square bracket at pos {pos}");
+            }
+
+            unit.OpenSquareBracketPosition = pos;
+        }
+
+        private void ProcessCloseSquareBracket(int pos, Stack<InterpolationUnitDto> units)
+        {
+            var unit = units.Peek();
+            if (unit.IsClosed)
+            {
+                return;
+            }
+
+            if (unit.OpenSquareBracketPosition == -1)
+            {
+                throw new WrongStringException($"Close square bracket at pos {pos}");
+            }
+
+            if (unit.CloseSquareBracketPosition != -1)
+            {
+                throw new WrongStringException($"Double square bracket at pos {pos}");
+            }
+
+            unit.CloseSquareBracketPosition = pos;
+        }
+
         private void Validate(
-            Stack<InterpolationUnit> units, 
+            Stack<InterpolationUnitDto> units, 
             Stack<EscapeCharacter> escapeChars)
         {
             foreach (var unit in units)
             {
-                if (!unit.IsClosed)
+                var result = _validationService.ValidateInterpolationUnit(unit);
+                if (!result.Succeed)
                 {
-                    throw new WrongStringException($"Wrong string starting at {unit.OpenPosition}");
+                    throw new WrongStringException(result.ErrorMessage);
                 }
             }
 
             foreach (var ch in escapeChars)
             {
-                if (!ch.IsClosed)
+                var result = _validationService.ValidateEscapeCharacter(ch);
+                if (!result.Succeed)
                 {
-                    throw new WrongStringException($"Wrong string starting at {ch.Position}");
+                    throw new WrongStringException(result.ErrorMessage);
                 }
             }
         }
     
-        private string ReplaceInterpolationUnits(string template, 
+        private StringBuilder GenerateInterpolatedString(string template, 
             object target,
-            Stack<InterpolationUnit> units, 
-            Stack<EscapeCharacter> escapeChars)
+            Stack<InterpolationUnitDto> units)
         {
             var sb = new StringBuilder(template);
-            foreach (var unit in units)
+            ProcessInterpolationUnits(sb, target, units, template);
+            ProcessEscapeCharacters(sb);
+            return sb;
+        }
+
+        private void ProcessInterpolationUnits(StringBuilder sb,
+            object target, 
+            Stack<InterpolationUnitDto> units, 
+            string template)
+        {
+            var type = target.GetType();
+            foreach (var dto in units)
             {
-                var name = template.Substring(unit.OpenPosition + 1, unit.ClosePosition - unit.OpenPosition - 1);
-                var type = target.GetType();
+                var unit = dto.ToUnit(template);
+                
                 Delegate del;
-                DictionaryKey key = new() { Type = type, MethodName = name};
-                var cacheResult = _cache.TryGetValue(key, out del);
+                DictionaryKey key = new() { Type = type, MemberName = unit.Name, Index = unit.Index};
+                var cacheResult = _cacheService.TryGetValue(key, out del);
 
                 if (!cacheResult)
                 {
-                    del = GenerateDelegate(type, name.Trim());
-                    _cache.TryAdd(key, del);
+                    if (unit.IsArray)
+                    {
+                        del = GenerateArrayDelegate(type, unit.Name, unit.Index);
+                    }
+                    else
+                    {
+                        del = GenerateDelegate(type, unit.Name);
+                    }
+                    
+                    _cacheService.TryAdd(key, del);
                 }
 
-                var result = (string)del.DynamicInvoke(target);
                 
-                sb.Remove(unit.OpenPosition, unit.ClosePosition - unit.OpenPosition + 1);
-                sb.Insert(unit.OpenPosition, result);
+                string result;
+                if (unit.IsArray)
+                {
+                    result = (string)del.DynamicInvoke(target);
+                }
+                else
+                {
+                    result = (string)del.DynamicInvoke(target);
+                }
+                
+                sb.Remove(dto.OpenCurlyBracketPosition, 
+                    dto.CloseCurlyBracketPosition - dto.OpenCurlyBracketPosition + 1);
+                sb.Insert(dto.OpenCurlyBracketPosition, result);
             }
-
-            sb.Replace("{{", "{");
-            sb.Replace("}}", "}");
-            return sb.ToString();
         }
 
+        private void ProcessEscapeCharacters(StringBuilder sb)
+        {
+            sb.Replace("{{", "{");
+            sb.Replace("}}", "}");
+        }
         private Delegate GenerateDelegate(Type targetType, string memberName)
         {
-            var param = Expression.Parameter(targetType);
-            var memberAccess = Expression.MakeMemberAccess(param, targetType.GetMember(memberName).First());
-            var methodCall = Expression.Call(memberAccess, targetType.GetMethod("ToString"));
+            var targetTypeParameter = Expression.Parameter(targetType);
+            var memberInfo = targetType.GetMember(memberName).First();
+            var memberAccess = Expression.MakeMemberAccess(targetTypeParameter, memberInfo);
+            var methodCall = Expression.Call(memberAccess, memberInfo.DeclaringType.GetMethod("ToString"));
             var delegateType = Expression.GetDelegateType(targetType, typeof(string));
-            return Expression.Lambda(delegateType, methodCall, param).Compile();
+            return Expression.Lambda(delegateType, methodCall, targetTypeParameter).Compile();
+        }
+
+        private Delegate GenerateArrayDelegate(Type targetType, string memberName, int index)
+        {
+            var targetTypeParameter = Expression.Parameter(targetType);
+            var memberInfo = targetType.GetMember(memberName).First();
+            var arrayElementInfo = memberInfo.GetUnderlyingType().GetElementType();
+            var memberAccess = Expression.MakeMemberAccess(targetTypeParameter, memberInfo);
+            var arrayAccess = Expression.ArrayIndex(memberAccess, Expression.Constant(index));
+            //var arrayAccess = Expression.ArrayAccess(memberAccess, indexParameter);
+            var method = arrayElementInfo.GetMethod("ToString", new Type[0]);
+            var methodCall = Expression.Call(arrayAccess, method);
+            var delegateType = Expression.GetDelegateType(targetType, typeof(string));
+            return Expression.Lambda(delegateType, methodCall, targetTypeParameter).Compile();
         }
     }
 }
