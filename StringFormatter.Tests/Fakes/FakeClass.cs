@@ -8,6 +8,7 @@ namespace StringFormatter.Tests.Fakes
     public class FakeClass
     {
         public int Age { get; set; }
+        public string Name { get; set; }
         public string[] Children { get; set; } = { "Suzy", "Emily" };
     }
 }
